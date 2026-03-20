@@ -1,5 +1,11 @@
 import path from "node:path";
 import type { NextConfig } from "next";
+import createPwa from "next-pwa";
+
+const withPwa = createPwa({
+  dest: "public",
+  disable: process.env.NODE_ENV === "development",
+});
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
@@ -8,4 +14,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withPwa(nextConfig);

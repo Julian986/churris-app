@@ -7,22 +7,20 @@ type Contract = {
   title: string;
   details: string;
   startDate: string;
-  durationDays: number;
+  startTime?: string;
+  endDate: string;
+  endTime?: string;
   createdAt: string;
+  createdByName: string;
+  acceptedByName?: string;
+  acceptedAt?: string;
 };
 
 type ContractStatus = "pending" | "active" | "completed";
 type FilterStatus = "all" | ContractStatus;
-type Viewer = "yo" | "vos";
-
-const STORAGE_KEY = "churris-contracts";
 
 function formatInputDate(date: Date) {
   return date.toISOString().slice(0, 10);
-}
-
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 function parseInputDate(value: string) {
@@ -44,20 +42,79 @@ function formatHumanDate(value: string) {
   }).format(parseInputDate(value));
 }
 
-function getEndDate(contract: Contract) {
-  return addDays(parseInputDate(contract.startDate), contract.durationDays - 1);
+function formatHumanTime(value?: string) {
+  if (!value) {
+    return null;
+  }
+
+  return value.slice(0, 5);
+}
+
+function formatHumanDateTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+
+  return new Intl.DateTimeFormat("es-AR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function parseDateTime(dateValue: string, timeValue?: string, endOfDay = false) {
+  const baseDate = parseInputDate(dateValue);
+
+  if (timeValue) {
+    const [hours, minutes] = timeValue.split(":").map(Number);
+    return new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      hours,
+      minutes,
+      0,
+      0,
+    );
+  }
+
+  if (endOfDay) {
+    return new Date(
+      baseDate.getFullYear(),
+      baseDate.getMonth(),
+      baseDate.getDate(),
+      23,
+      59,
+      59,
+      999,
+    );
+  }
+
+  return baseDate;
+}
+
+function getStartDateTime(contract: Contract) {
+  return parseDateTime(contract.startDate, contract.startTime);
+}
+
+function getEndDateTime(contract: Contract) {
+  return parseDateTime(contract.endDate, contract.endTime, true);
 }
 
 function getContractStatus(contract: Contract): ContractStatus {
-  const today = startOfDay(new Date());
-  const startDate = parseInputDate(contract.startDate);
-  const endDate = getEndDate(contract);
+  const now = new Date();
+  const startDate = getStartDateTime(contract);
+  const endDate = getEndDateTime(contract);
 
-  if (today < startDate) {
+  if (now < startDate) {
     return "pending";
   }
 
-  if (today > endDate) {
+  if (now > endDate) {
     return "completed";
   }
 
@@ -75,12 +132,17 @@ function getProgress(contract: Contract) {
     return 100;
   }
 
-  const today = startOfDay(new Date());
-  const startDate = parseInputDate(contract.startDate);
-  const elapsedMs = today.getTime() - startDate.getTime();
-  const elapsedDays = Math.floor(elapsedMs / 86_400_000) + 1;
+  const now = new Date();
+  const startDate = getStartDateTime(contract);
+  const endDate = getEndDateTime(contract);
+  const totalMs = endDate.getTime() - startDate.getTime();
 
-  return Math.min(100, Math.max(0, Math.round((elapsedDays / contract.durationDays) * 100)));
+  if (totalMs <= 0) {
+    return 100;
+  }
+
+  const elapsedMs = now.getTime() - startDate.getTime();
+  return Math.min(100, Math.max(0, Math.round((elapsedMs / totalMs) * 100)));
 }
 
 function getStatusLabel(status: ContractStatus) {
@@ -115,49 +177,104 @@ const FILTERS: { key: FilterStatus; label: string }[] = [
 ];
 
 export default function Home() {
+  const [authStatus, setAuthStatus] = useState<"checking" | "unauthenticated" | "authenticated">(
+    "checking",
+  );
+  const [currentUserName, setCurrentUserName] = useState("");
+  const [loginUserName, setLoginUserName] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [contracts, setContracts] = useState<Contract[]>([]);
-  const [hasLoadedContracts, setHasLoadedContracts] = useState(false);
+  const [isLoadingContracts, setIsLoadingContracts] = useState(true);
+  const [requestError, setRequestError] = useState("");
   const [filter, setFilter] = useState<FilterStatus>("all");
-  const [viewer, setViewer] = useState<Viewer>("yo");
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [openContractId, setOpenContractId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
   const [startDate, setStartDate] = useState(() => formatInputDate(new Date()));
-  const [durationDays, setDurationDays] = useState("3");
+  const [startTime, setStartTime] = useState("");
+  const [endDate, setEndDate] = useState(() => formatInputDate(addDays(new Date(), 3)));
+  const [endTime, setEndTime] = useState("");
+  const [dateError, setDateError] = useState("");
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      const savedContracts = window.localStorage.getItem(STORAGE_KEY);
+    let isMounted = true;
 
-      if (savedContracts) {
-        try {
-          const parsedContracts = JSON.parse(savedContracts) as Contract[];
-          const onlySeedContracts =
-            parsedContracts.length > 0 &&
-            parsedContracts.every((contract) => contract.id.startsWith("sample-"));
+    async function loadSession() {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
 
-          setContracts(onlySeedContracts ? [] : parsedContracts);
-        } catch {
-          setContracts([]);
+        if (!response.ok) {
+          throw new Error("No autenticado");
         }
-      } else {
-        setContracts([]);
+
+        const data = (await response.json()) as { userName: string };
+
+        if (isMounted) {
+          setCurrentUserName(data.userName);
+          setAuthStatus("authenticated");
+        }
+      } catch {
+        if (isMounted) {
+          setAuthStatus("unauthenticated");
+        }
       }
+    }
 
-      setHasLoadedContracts(true);
-    });
+    void loadSession();
 
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
-    if (!hasLoadedContracts) {
+    if (authStatus !== "authenticated") {
+      setIsLoadingContracts(false);
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(contracts));
-  }, [contracts, hasLoadedContracts]);
+    let isMounted = true;
+
+    async function loadContracts() {
+      setIsLoadingContracts(true);
+      setRequestError("");
+
+      try {
+        const response = await fetch("/api/contracts", { cache: "no-store" });
+
+        if (!response.ok) {
+          if (response.status === 401) {
+            setAuthStatus("unauthenticated");
+          }
+          throw new Error("No se pudo cargar");
+        }
+
+        const data = (await response.json()) as { contracts: Contract[] };
+
+        if (isMounted) {
+          setContracts(data.contracts ?? []);
+        }
+      } catch {
+        if (isMounted) {
+          setRequestError("No se pudieron cargar los contratos desde la base de datos.");
+          setContracts([]);
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingContracts(false);
+        }
+      }
+    }
+
+    void loadContracts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authStatus]);
 
   const contractStats = useMemo(() => {
     const pending = contracts.filter((contract) => getContractStatus(contract) === "pending").length;
@@ -176,7 +293,7 @@ export default function Home() {
 
   const filteredContracts = useMemo(() => {
     const sortedContracts = [...contracts].sort((left, right) => {
-      return getEndDate(left).getTime() - getEndDate(right).getTime();
+      return getEndDateTime(left).getTime() - getEndDateTime(right).getTime();
     });
 
     if (filter === "all") {
@@ -191,67 +308,224 @@ export default function Home() {
 
     const normalizedTitle = title.trim();
     const normalizedDetails = details.trim();
-    const parsedDuration = Number(durationDays);
+    const parsedStart = parseDateTime(startDate, startTime || undefined);
+    const parsedEnd = parseDateTime(endDate, endTime || undefined, true);
 
-    if (!normalizedTitle || !startDate || Number.isNaN(parsedDuration) || parsedDuration < 1) {
+    if (!normalizedTitle || !startDate || !endDate) {
       return;
     }
 
-    const nextContract: Contract = {
+    if (parsedEnd.getTime() < parsedStart.getTime()) {
+      setDateError("La fecha de finalizacion no puede ser anterior al inicio.");
+      return;
+    }
+
+    setDateError("");
+
+    const nextContractPayload = {
       id: crypto.randomUUID(),
       title: normalizedTitle,
       details: normalizedDetails || "Un acuerdo especial para ustedes dos.",
       startDate,
-      durationDays: parsedDuration,
+      startTime: startTime || undefined,
+      endDate,
+      endTime: endTime || undefined,
       createdAt: formatInputDate(new Date()),
     };
 
-    setContracts((currentContracts) => [nextContract, ...currentContracts]);
+    void (async () => {
+      try {
+        setRequestError("");
+        const response = await fetch("/api/contracts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(nextContractPayload),
+        });
+
+        if (!response.ok) {
+          throw new Error("No se pudo guardar");
+        }
+
+        const data = (await response.json()) as { contract: Contract };
+        setContracts((currentContracts) => [data.contract, ...currentContracts]);
+        setOpenContractId(nextContractPayload.id);
+      } catch {
+        setRequestError("No se pudo guardar el contrato en MongoDB.");
+      }
+    })();
+
     setTitle("");
     setDetails("");
     setStartDate(formatInputDate(new Date()));
-    setDurationDays("3");
+    setStartTime("");
+    setEndDate(formatInputDate(addDays(new Date(), 3)));
+    setEndTime("");
     setFilter("all");
     setIsFormOpen(false);
-    setOpenContractId(nextContract.id);
+  }
+
+  async function handleLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const normalizedUser = loginUserName.trim();
+
+    if (normalizedUser.length < 2 || loginPassword.length === 0) {
+      setLoginError("Completa usuario y contrasena.");
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError("");
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userName: normalizedUser,
+          password: loginPassword,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { message?: string };
+        throw new Error(data.message ?? "No se pudo iniciar sesion.");
+      }
+
+      const data = (await response.json()) as { userName: string };
+
+      setCurrentUserName(data.userName);
+      setAuthStatus("authenticated");
+      setLoginPassword("");
+      setLoginError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo iniciar sesion.";
+      setLoginError(message);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function handleAcceptContract(contractId: string) {
+    try {
+      setRequestError("");
+      const response = await fetch(`/api/contracts/${contractId}/accept`, {
+        method: "PATCH",
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { message?: string };
+        throw new Error(data.message ?? "No se pudo aceptar el contrato.");
+      }
+
+      const data = (await response.json()) as { contract: Contract };
+      setContracts((currentContracts) =>
+        currentContracts.map((contract) => (contract.id === contractId ? data.contract : contract)),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo aceptar el contrato.";
+      setRequestError(message);
+    }
+  }
+
+  async function handleDeleteContract(contractId: string) {
+    const userConfirmed = window.confirm("Quieres eliminar este contrato?");
+
+    if (!userConfirmed) {
+      return;
+    }
+
+    try {
+      setRequestError("");
+      const response = await fetch(`/api/contracts/${contractId}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { message?: string };
+        throw new Error(data.message ?? "No se pudo eliminar el contrato.");
+      }
+
+      setContracts((currentContracts) =>
+        currentContracts.filter((contract) => contract.id !== contractId),
+      );
+      setOpenContractId((currentId) => (currentId === contractId ? null : currentId));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo eliminar el contrato.";
+      setRequestError(message);
+    }
+  }
+
+  if (authStatus === "checking") {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#fcfafb] text-stone-500">
+        Verificando acceso...
+      </main>
+    );
+  }
+
+  if (authStatus === "unauthenticated") {
+    return (
+      <main className="min-h-screen bg-[#fcfafb] px-4 py-8 text-slate-900">
+        <div className="mx-auto flex min-h-[80vh] w-full max-w-md items-center">
+          <section className="w-full rounded-[28px] border border-stone-200 bg-white p-5 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:p-6">
+            <h1 className="text-2xl font-semibold tracking-tight">Acceso privado</h1>
+            <p className="mt-2 text-sm leading-7 text-stone-500">
+              Ingresa tu nombre de usuario y la contrasena privada para entrar.
+            </p>
+
+            <form className="mt-5 space-y-4" onSubmit={handleLogin}>
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-stone-700">Usuario</span>
+                <input
+                  className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
+                  value={loginUserName}
+                  onChange={(event) => setLoginUserName(event.target.value)}
+                  placeholder="Tu nombre"
+                  required
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="text-sm font-medium text-stone-700">Contrasena</span>
+                <input
+                  type="password"
+                  className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
+                  value={loginPassword}
+                  onChange={(event) => setLoginPassword(event.target.value)}
+                  required
+                />
+              </label>
+
+              {loginError ? <p className="text-sm font-medium text-rose-600">{loginError}</p> : null}
+
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="min-h-12 w-full rounded-2xl bg-gradient-to-r from-rose-500 to-violet-500 px-5 py-3 text-sm font-semibold text-white hover:from-rose-600 hover:to-violet-600 disabled:opacity-70"
+              >
+                {isLoggingIn ? "Entrando..." : "Entrar"}
+              </button>
+            </form>
+          </section>
+        </div>
+      </main>
+    );
   }
 
   return (
     <main className="min-h-screen bg-[#fcfafb] text-slate-900">
       <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 pb-28 pt-4 sm:px-5 md:px-8 md:pb-12 md:pt-5">
-        <header className="flex flex-col gap-4 rounded-[24px] border border-stone-200 bg-white/95 px-4 py-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:px-5 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-xl font-semibold tracking-tight sm:text-2xl">Super cute</p>
-          </div>
-
-          <div className="grid w-full grid-cols-2 rounded-2xl border border-stone-200 bg-stone-50 p-1 md:w-auto">
-            <button
-              type="button"
-              onClick={() => setViewer("yo")}
-              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-medium ${
-                viewer === "yo" ? "bg-white text-slate-900 shadow-sm" : "text-stone-500"
-              }`}
-            >
-              Usuario 1
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewer("vos")}
-              className={`min-h-11 rounded-xl px-4 py-2 text-sm font-medium ${
-                viewer === "vos" ? "bg-white text-slate-900 shadow-sm" : "text-stone-500"
-              }`}
-            >
-              Usuario 2
-            </button>
-          </div>
-        </header>
-
-        <section className="pt-8 sm:pt-10 md:pt-12">
+        <section className="pt-2 sm:pt-4 md:pt-6">
           <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl md:text-5xl">
             Churris contratos
           </h1>
           <p className="mt-3 max-w-2xl text-base text-stone-500 sm:text-lg">
-            Crea, organiza y hace seguimiento de sus acuerdos de a dos.
+            Hola {currentUserName}. Aca creamos y seguimos nuestros acuerdos.
           </p>
 
           <button
@@ -272,7 +546,7 @@ export default function Home() {
                   className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
-                  placeholder="Ej: contrato de 3 dias"
+                  placeholder="Ej: contrato churrero"
                   required
                 />
               </label>
@@ -299,16 +573,41 @@ export default function Home() {
               </label>
 
               <label className="space-y-2">
-                <span className="text-sm font-medium text-stone-700">Duracion en dias</span>
+                <span className="text-sm font-medium text-stone-700">Hora de inicio (opcional)</span>
                 <input
-                  type="number"
-                  min="1"
+                  type="time"
                   className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
-                  value={durationDays}
-                  onChange={(event) => setDurationDays(event.target.value)}
+                  value={startTime}
+                  onChange={(event) => setStartTime(event.target.value)}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-stone-700">Fecha de finalizacion</span>
+                <input
+                  type="date"
+                  className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
+                  value={endDate}
+                  onChange={(event) => setEndDate(event.target.value)}
                   required
                 />
               </label>
+
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-stone-700">
+                  Hora de finalizacion (opcional)
+                </span>
+                <input
+                  type="time"
+                  className="min-h-12 w-full rounded-2xl border border-stone-200 bg-stone-50 px-4 py-3 text-base outline-none focus:border-rose-300 focus:bg-white"
+                  value={endTime}
+                  onChange={(event) => setEndTime(event.target.value)}
+                />
+              </label>
+
+              {dateError ? (
+                <p className="text-sm font-medium text-rose-600 md:col-span-2">{dateError}</p>
+              ) : null}
 
               <div className="flex flex-col gap-3 md:col-span-2 sm:flex-row">
                 <button
@@ -367,7 +666,16 @@ export default function Home() {
         </section>
 
         <section className="mt-6 flex-1 rounded-[28px] border border-dashed border-stone-200 bg-white p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)] sm:mt-8 sm:rounded-[32px] sm:p-5 md:p-6">
-          {filteredContracts.length === 0 ? (
+          {requestError ? (
+            <div className="flex min-h-[240px] flex-col items-center justify-center text-center">
+              <h2 className="text-xl font-semibold text-slate-900">Error de conexion</h2>
+              <p className="mt-2 max-w-md text-sm leading-7 text-stone-500">{requestError}</p>
+            </div>
+          ) : isLoadingContracts ? (
+            <div className="flex min-h-[240px] items-center justify-center text-stone-500">
+              Cargando contratos...
+            </div>
+          ) : filteredContracts.length === 0 ? (
             <div className="flex min-h-[340px] flex-col items-center justify-center text-center sm:min-h-[420px]">
               <div className="flex h-20 w-20 items-center justify-center rounded-full bg-stone-50 text-4xl text-stone-300 sm:h-24 sm:w-24">
                 ○
@@ -376,7 +684,7 @@ export default function Home() {
                 No hay contratos
               </h2>
               <p className="mt-3 max-w-md text-base leading-7 text-stone-500 sm:text-lg sm:leading-8">
-                Todavia no tienen ningun contrato. Crea el primero para empezar.
+                Crea un contrato, por cierto intenta que sea super super cute🥰
               </p>
               <button
                 type="button"
@@ -391,8 +699,13 @@ export default function Home() {
               {filteredContracts.map((contract) => {
                 const status = getContractStatus(contract);
                 const progress = getProgress(contract);
-                const endDate = getEndDate(contract);
+                const endDateTime = getEndDateTime(contract);
                 const isOpen = openContractId === contract.id;
+                const startTimeLabel = formatHumanTime(contract.startTime);
+                const endTimeLabel = formatHumanTime(contract.endTime);
+                const canAccept =
+                  currentUserName !== contract.createdByName && !contract.acceptedAt;
+                const canDelete = currentUserName === contract.createdByName;
 
                 return (
                   <article
@@ -435,8 +748,15 @@ export default function Home() {
                           </div>
 
                           <div className="mt-3 flex flex-col gap-1 text-sm text-stone-500 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-                            <span>Inicio: {formatHumanDate(contract.startDate)}</span>
-                            <span>Fin: {endDate.toLocaleDateString("es-AR")}</span>
+                            <span>Creado por: {contract.createdByName}</span>
+                            <span>
+                              Inicio: {formatHumanDate(contract.startDate)}
+                              {startTimeLabel ? ` ${startTimeLabel}` : ""}
+                            </span>
+                            <span>
+                              Fin: {endDateTime.toLocaleDateString("es-AR")}
+                              {endTimeLabel ? ` ${endTimeLabel}` : ""}
+                            </span>
                           </div>
                         </div>
 
@@ -452,11 +772,44 @@ export default function Home() {
                           <p className="text-sm leading-7 text-stone-500">{contract.details}</p>
                         ) : null}
 
-                        <div className="mt-4 grid gap-2 text-sm text-stone-500 sm:grid-cols-3">
+                        <div className="mt-4 grid gap-2 text-sm text-stone-500 sm:grid-cols-2">
                           <p>Creado: {formatHumanDate(contract.createdAt)}</p>
-                          <p>Inicio: {formatHumanDate(contract.startDate)}</p>
-                          <p>Fin: {endDate.toLocaleDateString("es-AR")}</p>
+                          <p>
+                            Inicio: {formatHumanDate(contract.startDate)}
+                            {startTimeLabel ? ` ${startTimeLabel}` : ""}
+                          </p>
+                          <p>
+                            Fin: {endDateTime.toLocaleDateString("es-AR")}
+                            {endTimeLabel ? ` ${endTimeLabel}` : ""}
+                          </p>
+                          <p>Autor: {contract.createdByName}</p>
+                          <p>
+                            Aceptado por:{" "}
+                            {contract.acceptedByName
+                              ? `${contract.acceptedByName} (${formatHumanDateTime(contract.acceptedAt ?? "")})`
+                              : "0 churritos"}
+                          </p>
                         </div>
+
+                        {canAccept ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleAcceptContract(contract.id)}
+                            className="mt-4 min-h-11 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700"
+                          >
+                            Unirme / Aceptar contrato
+                          </button>
+                        ) : null}
+
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteContract(contract.id)}
+                            className="mt-3 min-h-11 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700"
+                          >
+                            Eliminar contrato
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
                   </article>
