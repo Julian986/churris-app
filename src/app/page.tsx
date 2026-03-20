@@ -220,13 +220,8 @@ export default function Home() {
     <main className="min-h-screen bg-[#fcfafb] text-slate-900">
       <div className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 pb-28 pt-4 sm:px-5 md:px-8 md:pb-12 md:pt-5">
         <header className="flex flex-col gap-4 rounded-[24px] border border-stone-200 bg-white/95 px-4 py-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:px-5 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-400 to-violet-400 text-lg text-white">
-              C
-            </div>
-            <div>
-              <p className="text-xl font-semibold tracking-tight sm:text-2xl">Super cute</p>
-            </div>
+          <div>
+            <p className="text-xl font-semibold tracking-tight sm:text-2xl">Super cute</p>
           </div>
 
           <div className="grid w-full grid-cols-2 rounded-2xl border border-stone-200 bg-stone-50 p-1 md:w-auto">
