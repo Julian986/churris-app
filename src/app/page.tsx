@@ -170,10 +170,10 @@ function getStatusClasses(status: ContractStatus) {
 }
 
 const FILTERS: { key: FilterStatus; label: string }[] = [
-  { key: "all", label: "Todos" },
-  { key: "pending", label: "Pendientes" },
   { key: "active", label: "En progreso" },
   { key: "completed", label: "Finalizados" },
+  { key: "pending", label: "Pendientes" },
+  { key: "all", label: "Todos" },
 ];
 
 export default function Home() {
@@ -188,7 +188,7 @@ export default function Home() {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [isLoadingContracts, setIsLoadingContracts] = useState(true);
   const [requestError, setRequestError] = useState("");
-  const [filter, setFilter] = useState<FilterStatus>("all");
+  const [filter, setFilter] = useState<FilterStatus>("active");
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [openContractId, setOpenContractId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -362,7 +362,7 @@ export default function Home() {
     setStartTime("");
     setEndDate(formatInputDate(addDays(new Date(), 3)));
     setEndTime("");
-    setFilter("all");
+    setFilter("active");
     setIsFormOpen(false);
   }
 
